@@ -1,0 +1,65 @@
+name: Deploy Hermes Agent to DigitalOcean
+
+on:
+  workflow_dispatch: # Manual strike
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Configuration
+        uses: actions/checkout@v4
+
+      - name: Copy files to Droplet
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DIGITALOCEAN_DROPLET_IP }}
+          username: ${{ secrets.DIGITALOCEAN_USER || 'root' }}
+          key: ${{ secrets.DIGITALOCEAN_SSH_KEY }}
+          source: "hermes-agent/*"
+          target: "/app/praxisos/"
+          strip_components: 0
+
+      - name: Deploy to Droplet
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DIGITALOCEAN_DROPLET_IP }}
+          username: ${{ secrets.DIGITALOCEAN_USER || 'root' }}
+          key: ${{ secrets.DIGITALOCEAN_SSH_KEY }}
+          script: |
+            # Check if Docker is installed
+            if ! command -v docker &> /dev/null; then
+              echo "Docker not found. Installing Docker..."
+
+              # Update package index
+              apt-get update
+
+              # Install prerequisites
+              apt-get install -y ca-certificates curl gnupg lsb-release
+
+              # Add Docker's official GPG key
+              install -m 0755 -d /etc/apt/keyrings
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+              chmod a+r /etc/apt/keyrings/docker.gpg
+
+              # Set up the Docker repository
+              echo \
+                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+                $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+              # Install Docker Engine and Docker Compose
+              apt-get update
+              apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+              echo "Docker installed successfully"
+            else
+              echo "Docker is already installed"
+            fi
+
+            # Navigate to the hermes-agent directory
+            cd /app/praxisos/hermes-agent
+
+            # Restart the service
+            docker compose down || true
+            docker compose up -d --build

@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+.env
+.env.local
+*.local
+
+# Flutter
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.dart_tool/
+
+# Firebase
+.firebase/
+firebase-debug.log*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Hermes agent
+.hermes/
+__pycache__/
+*.pyc
+
+# Supabase
+supabase/db/migrations/meta/
+supabase/db/node_modules/
+
+# Build outputs
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+logs/

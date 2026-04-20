@@ -1,0 +1,26 @@
+# Security
+.env
+auth.json
+
+# State and Data (Do not sync across devices)
+sessions/
+logs/
+memories/
+audio_cache/
+image_cache/
+whatsapp/session/
+cron/state/
+*.db
+*.db-shm
+*.db-wal
+.hermes_history
+.update_check
+.skills_prompt_snapshot.json
+cache/
+sandboxes/
+pastes/
+images/
+
+# Python Virtual Environments (if applicable)
+venv/
+__pycache__/

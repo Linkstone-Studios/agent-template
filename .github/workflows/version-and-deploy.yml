@@ -1,0 +1,129 @@
+name: Version and Deploy
+
+on:
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: 'AI Provider'
+        required: true
+        default: 'hermes'
+        type: choice
+        options:
+          - hermes
+          - firebase_ai
+      feature:
+        description: 'Feature suffix'
+        required: false
+        default: 'basic'
+
+jobs:
+  version-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for version tracking
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+
+      - name: Bump version
+        env:
+          AI_PROVIDER: ${{ github.event.inputs.provider || 'hermes' }}
+          FEATURE_SUFFIX: ${{ github.event.inputs.feature || 'basic' }}
+        run: |
+          chmod +x scripts/bump-version.sh
+          ./scripts/bump-version.sh
+
+      - name: Get Flutter dependencies
+        working-directory: flutter
+        run: flutter pub get
+
+      - name: Build Flutter web
+        working-directory: flutter
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          flutter build web --release \
+            --dart-define=AI_PROVIDER=${{ github.event.inputs.provider || 'hermes' }} \
+            --dart-define=SUPABASE_URL=$SUPABASE_URL \
+            --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
+
+      - name: Deploy to Firebase Hosting
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          channelId: live
+          projectId: praxisos-1
+
+      - name: Extract version info
+        id: version
+        run: |
+          VERSION=$(grep "^version:" flutter/pubspec.yaml | sed 's/version: //')
+          COMMIT_HASH=$(git rev-parse HEAD)
+          BUILD_NUMBER=$(echo $VERSION | grep -o '+[0-9]*' | tr -d '+')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "commit_hash=$COMMIT_HASH" >> $GITHUB_OUTPUT
+          echo "build_number=$BUILD_NUMBER" >> $GITHUB_OUTPUT
+
+      - name: Log deployment to Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          COMMIT_HASH="${{ steps.version.outputs.commit_hash }}"
+          BUILD_NUMBER="${{ steps.version.outputs.build_number }}"
+          PROVIDER="${{ github.event.inputs.provider || 'hermes' }}"
+          FEATURE="${{ github.event.inputs.feature || 'basic' }}"
+
+          curl -X POST "$SUPABASE_URL/rest/v1/app_versions" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d "{\"version\":\"$VERSION\",\"provider\":\"$PROVIDER\",\"feature_suffix\":\"$FEATURE\",\"build_number\":$BUILD_NUMBER,\"deployment_type\":\"web\",\"git_commit_hash\":\"$COMMIT_HASH\",\"active\":true}"
+
+          echo "✅ Deployment logged to Supabase"
+          echo "   Version: $VERSION"
+          echo "   Provider: $PROVIDER"
+          echo "   Feature: $FEATURE"
+          echo "   Build: $BUILD_NUMBER"
+          echo "   Commit: $COMMIT_HASH"
+
+      - name: Create deployment summary
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PROVIDER="${{ github.event.inputs.provider || 'hermes' }}"
+          
+          echo "## Deployment Summary 🚀" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** \`$VERSION\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Provider:** \`$PROVIDER\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Platform:** Web" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${{ steps.version.outputs.commit_hash }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Deployment completed successfully! ✨" >> $GITHUB_STEP_SUMMARY
+
+      - name: Push version changes
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          git add flutter/pubspec.yaml
+          git commit -m "chore: bump version to $VERSION [skip ci]" || echo "No changes to commit"
+          git push origin ${{ github.ref_name }}
+
