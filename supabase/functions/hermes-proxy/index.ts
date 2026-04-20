@@ -11,6 +11,11 @@ const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 const SKIP_SUBSCRIPTION_CHECK = Deno.env.get('SKIP_SUBSCRIPTION_CHECK') === 'true'
 
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+}
+
 interface ChatRequest {
   model?: string
   messages: Array<{
@@ -25,9 +30,8 @@ serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, {
       headers: {
-        'Access-Control-Allow-Origin': '*',
+        ...corsHeaders,
         'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-        'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
       },
     })
   }
@@ -40,7 +44,7 @@ serve(async (req) => {
     if (!authHeader) {
       return new Response(JSON.stringify({ error: 'Missing authorization header' }), {
         status: 401,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
 
@@ -60,7 +64,7 @@ serve(async (req) => {
         tokenStart: token.substring(0, 30)
       }), {
         status: 401,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
 
@@ -82,7 +86,7 @@ serve(async (req) => {
           message: 'Please subscribe to use the AI agent'
         }), {
           status: 403,
-          headers: { 'Content-Type': 'application/json' },
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         })
       }
 
@@ -93,7 +97,7 @@ serve(async (req) => {
           message: 'Your subscription has expired. Please renew to continue.'
         }), {
           status: 403,
-          headers: { 'Content-Type': 'application/json' },
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         })
       }
 
@@ -104,7 +108,7 @@ serve(async (req) => {
           message: 'Your subscription has expired. Please renew to continue.'
         }), {
           status: 403,
-          headers: { 'Content-Type': 'application/json' },
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         })
       }
     }
@@ -117,45 +121,99 @@ serve(async (req) => {
       body.model = 'gemini-3-flash-preview'
     }
 
-    // 4. Forward request to Hermes Agent
+    // 4. Forward request to Hermes Agent with user context
+    const startTime = Date.now()
     const hermesResponse = await fetch(`${HERMES_BASE_URL}/v1/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${HERMES_API_PASSWORD}`,
+        // Pass user context to Hermes for tool authentication
+        'X-User-ID': user.id,
+        'X-User-Email': user.email || '',
+        'X-Supabase-Token': token,  // Pass through original JWT for Supabase operations
       },
       body: JSON.stringify(body),
     })
 
-    // 5. Log usage (optional - for analytics/billing)
-    // Use service role for database writes
-    const supabaseServiceRole = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-    await supabaseServiceRole.from('agent_usage').insert({
-      user_id: user.id,
-      model: body.model,
-      message_count: body.messages.length,
-      timestamp: new Date().toISOString(),
-    })
+    if (!hermesResponse.ok) {
+      const errorText = await hermesResponse.text()
+      console.error('Hermes error:', errorText)
+      return new Response(JSON.stringify({
+        error: 'Hermes API error',
+        details: errorText
+      }), {
+        status: hermesResponse.status,
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json',
+        },
+      })
+    }
 
-    // 6. Return response to client
-    const responseData = await hermesResponse.json()
-    
-    return new Response(JSON.stringify(responseData), {
-      status: hermesResponse.status,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      },
-    })
+    // 5. Handle streaming vs non-streaming responses
+    const supabaseServiceRole = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+    if (body.stream) {
+      // Streaming response - pipe through and log basic usage
+      console.log('Streaming response from Hermes')
+
+      // Log basic usage (can't get exact tokens from stream without parsing)
+      const latency = Date.now() - startTime
+      await supabaseServiceRole.from('ai_usage_logs').insert({
+        user_id: user.id,
+        provider: 'hermes',
+        model: body.model,
+        latency_ms: latency,
+      })
+
+      // Return streaming response with proper headers
+      return new Response(hermesResponse.body, {
+        status: hermesResponse.status,
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+        },
+      })
+    } else {
+      // Non-streaming response - parse and log detailed usage
+      const responseData = await hermesResponse.json()
+      const latency = Date.now() - startTime
+
+      // Extract token usage if available
+      const usage = responseData.usage || {}
+      const inputTokens = usage.prompt_tokens || null
+      const outputTokens = usage.completion_tokens || null
+
+      // Log detailed usage
+      await supabaseServiceRole.from('ai_usage_logs').insert({
+        user_id: user.id,
+        provider: 'hermes',
+        model: body.model,
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        latency_ms: latency,
+      })
+
+      return new Response(JSON.stringify(responseData), {
+        status: hermesResponse.status,
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json',
+        },
+      })
+    }
 
   } catch (error) {
     console.error('Error in hermes-proxy:', error)
-    return new Response(JSON.stringify({ 
+    return new Response(JSON.stringify({
       error: 'Internal server error',
-      message: error.message 
+      message: error instanceof Error ? error.message : 'Unknown error'
     }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
   }
 })

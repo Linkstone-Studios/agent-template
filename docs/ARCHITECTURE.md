@@ -5,31 +5,62 @@ This document describes the high-level architecture of the agent template.
 ## Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Flutter App                               │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
-│  │   Auth      │  │   Chat      │  │   Analytics             │  │
-│  │  (Firebase) │  │  (AI Prov.) │  │  (Firebase + Supabase)  │  │
-│  └─────────────┘  └─────────────┘  └─────────────────────────┘  │
-│         │                │                    │                   │
-│         └────────────────┼────────────────────┘                   │
-│                          │                                        │
-│                    ┌─────┴─────┐                                  │
-│                    │ Supabase  │                                  │
-│                    │ (Backend) │                                  │
-│                    └─────┬─────┘                                  │
-└──────────────────────────┼──────────────────────────────────────────┘
-                           │
-              ┌────────────┴────────────┐
-              │                         │
-              ▼                         ▼
-┌─────────────────────────┐  ┌─────────────────────────┐
-│   Hermes Agent           │  │   Firebase AI           │
-│   (DigitalOcean/docker)  │  │   (Google AI Studio)    │
-│   - Stateful             │  │   - Stateless           │
-│   - Tool execution       │  │   - Fast                │
-│   - OpenAI-compatible    │  │   - Simple              │
-└─────────────────────────┘  └─────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                        Flutter App (with Supabase JWT)               │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────────┐  │
+│  │   Auth      │  │   Chat      │  │   Analytics                 │  │
+│  │ (Supabase)  │  │  (AI Prov.) │  │  (Firebase + Supabase)      │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────────────┘  │
+│         │                │                    │                       │
+│         └────────────────┼────────────────────┘                       │
+│                          │ (sends JWT in Authorization header)       │
+│                          ▼                                            │
+│              ┌───────────────────────┐                                │
+│              │   Supabase Backend    │                                │
+│              │  ┌────────────────┐   │                                │
+│              │  │ Edge Functions │   │                                │
+│              │  │ - hermes-proxy │   │  (validates JWT, extracts      │
+│              │  │ - firebase-ai  │   │   user info, forwards with     │
+│              │  └────────────────┘   │   X-User-ID, X-Supabase-Token) │
+│              │  ┌────────────────┐   │                                │
+│              │  │  Database      │   │                                │
+│              │  │  + RLS Policies│   │                                │
+│              │  └────────────────┘   │                                │
+│              └───────────┬───────────┘                                │
+└────────────────────────────┼───────────────────────────────────────────┘
+                             │
+                ┌────────────┴──────────────┐
+                │                           │
+                ▼                           ▼
+┌────────────────────────────┐  ┌────────────────────────────┐
+│   Hermes Agent             │  │   Firebase AI              │
+│   (DigitalOcean/Docker)    │  │   (Google AI Studio)       │
+│   - Receives user context  │  │   - Direct API calls       │
+│   - Tool execution         │  │   - Streaming responses    │
+│   - Supabase operations    │  │   - Token counting         │
+│   - OpenAI-compatible API  │  │   - Cost tracking          │
+└────────────────────────────┘  └────────────────────────────┘
+```
+
+## Authentication Flow
+
+### Per-User Authentication
+
+Every AI request includes the user's Supabase JWT token, ensuring:
+
+1. **Identity Verification** - Only authenticated users can access AI services
+2. **Row Level Security** - Database queries respect user permissions
+3. **Usage Tracking** - All operations are logged per user
+4. **Subscription Enforcement** - Optional subscription checks before allowing requests
+
+**Request Flow:**
+```
+1. User signs in → Gets Supabase JWT
+2. User sends chat → Includes JWT in Authorization header
+3. Edge Function validates JWT → Extracts user.id, user.email
+4. Edge Function forwards to AI → Adds X-User-ID, X-User-Email, X-Supabase-Token headers
+5. AI provider (Hermes) receives → Tools can use user context for authenticated operations
+6. Response returns → Usage logged to database with user_id
 ```
 
 ## Components
@@ -94,8 +125,51 @@ Key tables:
 
 - **Row Level Security (RLS)**: Enabled on all user data tables
 - **JWT Validation**: All Edge Functions validate Supabase JWT
+- **User Context Passing**: AI providers receive user identity via headers
 - **Rate Limiting**: Via Upstash Redis (optional, for production)
 - **App Check**: Firebase App Check for mobile apps
+- **API Key Protection**: Google API keys never exposed to client
+
+## Tool Authentication in Hermes
+
+Hermes tools can perform operations on behalf of the authenticated user:
+
+### User Context Headers
+
+When called via `hermes-proxy`, Hermes receives:
+- `X-User-ID`: The authenticated user's Supabase user ID
+- `X-User-Email`: The user's email address
+- `X-Supabase-Token`: The original JWT token
+
+### Example: Querying User Data
+
+```python
+# In a Hermes skill/tool
+from supabase import create_client
+import os
+
+def get_user_conversations():
+    """Fetch conversations for the authenticated user"""
+    # User context automatically available from proxy headers
+    user_id = os.environ.get('X_USER_ID')
+    token = os.environ.get('X_SUPABASE_TOKEN')
+
+    # Create Supabase client with user's token (respects RLS)
+    supabase = create_client(
+        os.environ.get('SUPABASE_URL'),
+        token  # Use user's JWT, not anon key
+    )
+
+    # This query only returns the user's own conversations
+    result = supabase.table('conversations') \
+        .select('*') \
+        .eq('user_id', user_id) \
+        .execute()
+
+    return result.data
+```
+
+See `hermes-agent/skills/devops/supabase-auth/SKILL.md` for complete documentation.
 
 ## Environment Variables
 

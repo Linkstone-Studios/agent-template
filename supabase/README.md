@@ -84,17 +84,67 @@ npm run gen:dart
 
 ## Edge Functions
 
+Both edge functions provide **user authentication and context passing** for AI providers.
+
 ### hermes-proxy
 
-Proxies requests to the Hermes Agent running on DigitalOcean.
+Proxies requests to the Hermes Agent running on DigitalOcean with full user authentication.
 
 **Environment variables:**
-- `HERMES_BASE_URL` - URL of your Hermes droplet (default: `http://YOUR_DROPLET_IP:8642`)
-- `HERMES_API_PASSWORD` - Password for Hermes API
+- `HERMES_BASE_URL` - URL of your Hermes droplet (e.g., `http://192.168.1.100:8642`)
+- `HERMES_API_PASSWORD` - Password for Hermes API (matches `API_SERVER_KEY` in Hermes .env)
+- `SUPABASE_URL` - Your Supabase project URL (auto-provided)
+- `SUPABASE_ANON_KEY` - Your Supabase anon key (auto-provided)
+- `SUPABASE_SERVICE_ROLE_KEY` - Your Supabase service role key (auto-provided)
+- `SKIP_SUBSCRIPTION_CHECK` - Set to `true` to skip subscription validation (default: `false`)
+
+**What it does:**
+1. Validates user's Supabase JWT token
+2. (Optional) Checks user's subscription status
+3. Forwards request to Hermes with user context headers:
+   - `X-User-ID`: User's Supabase ID
+   - `X-User-Email`: User's email
+   - `X-Supabase-Token`: Original JWT for authenticated operations
+4. **Supports streaming** - If `stream: true` in request, pipes response as Server-Sent Events
+5. Logs usage to `ai_usage_logs` table (with token counts for non-streaming requests)
 
 ### firebase-ai-proxy
 
-Proxies requests to Google AI Studio (Firebase AI).
+Proxies requests to Google AI Studio API with user authentication and rate limiting.
+
+**Environment variables:**
+- `GOOGLE_API_KEY` - Your Google AI Studio API key
+- `SUPABASE_URL` - Your Supabase project URL (auto-provided)
+- `SUPABASE_ANON_KEY` - Your Supabase anon key (auto-provided)
+- `UPSTASH_REDIS_URL` - (Optional) Upstash Redis URL for rate limiting
+- `UPSTASH_REDIS_TOKEN` - (Optional) Upstash Redis token
+
+**What it does:**
+1. Validates user's Supabase JWT token
+2. (Optional) Enforces rate limiting (100 requests/day per user via Upstash Redis)
+3. **Streams response** from Google AI Studio in Server-Sent Events format
+4. Tracks token usage in real-time during streaming
+5. Logs complete usage with token counts and costs to `ai_usage_logs` table
+
+### Deploying Edge Functions
+
+```bash
+# Deploy both functions
+supabase functions deploy hermes-proxy
+supabase functions deploy firebase-ai-proxy
+
+# Set environment secrets
+supabase secrets set HERMES_BASE_URL=http://your-droplet-ip:8642
+supabase secrets set HERMES_API_PASSWORD=your-api-server-key
+supabase secrets set GOOGLE_API_KEY=your-google-api-key
+
+# Optional: Rate limiting
+supabase secrets set UPSTASH_REDIS_URL=your-redis-url
+supabase secrets set UPSTASH_REDIS_TOKEN=your-redis-token
+
+# Optional: Skip subscription checks for testing
+supabase secrets set SKIP_SUBSCRIPTION_CHECK=true
+```
 
 ## Migrations
 

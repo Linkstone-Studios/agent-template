@@ -52,14 +52,42 @@ curl https://<droplet-ip>:8642/v1/models
 ### Environment Variables (in `hermes-agent/.env`)
 
 ```env
-# Required
+# Required: API Server password (generate with: openssl rand -base64 32)
 API_SERVER_KEY=your-secure-api-key-here
+
+# Required: At least one AI provider
 GOOGLE_API_KEY=your-google-api-key
 
-# Optional
+# Required: Supabase integration (for user authentication in tools)
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-anon-key-here
+
+# Optional: Additional AI providers
 OPENAI_API_KEY=your-openai-key
 ANTHROPIC_API_KEY=your-anthropic-key
+
+# Optional: Supabase admin operations (bypasses RLS)
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 ```
+
+### Authentication Flow
+
+This deployment works with Supabase Edge Functions to provide **per-user authentication**:
+
+1. **Flutter App** → Sends request with user's Supabase JWT
+2. **Supabase Edge Function** (`hermes-proxy`) → Validates JWT, extracts user info
+3. **Hermes Agent** → Receives user context via headers:
+   - `X-User-ID`: User's Supabase ID
+   - `X-User-Email`: User's email
+   - `X-Supabase-Token`: JWT for authenticated Supabase operations
+
+This allows Hermes tools to:
+- Query user-specific data (respecting Row Level Security)
+- Save chat history to the user's account
+- Track usage per user
+- Enforce subscription limits
+
+See `hermes-agent/skills/devops/supabase-auth/SKILL.md` for using user context in tools.
 
 ## Scaling
 

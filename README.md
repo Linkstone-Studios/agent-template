@@ -71,6 +71,7 @@ docker compose up -d
 - Firebase integration (Auth, Analytics, Remote Config, App Check)
 - Supabase integration (Postgres, Auth, Edge Functions)
 - AI chat providers (Hermes + Firebase AI) with A/B testing support
+- **Per-user authentication** - All AI requests include user's Supabase JWT
 
 ### `hermes-agent/`
 - Hermes Agent with configurable personalities
@@ -82,6 +83,12 @@ docker compose up -d
 - Drizzle ORM for type-safe database management
 - Migrations in `migrations/` directory
 - Schema in `schema.ts` (source of truth)
+- **Row Level Security (RLS)** - User data protected by JWT validation
+
+### `supabase/functions/`
+- **hermes-proxy** - Validates JWT, forwards to Hermes with user context
+- **firebase-ai-proxy** - Validates JWT, streams from Google AI Studio
+- Both proxies pass user authentication to enable per-user operations
 
 ### `nemoclaw/`
 - DigitalOcean deployment scripts
@@ -141,17 +148,26 @@ The Hermes Agent runs in Docker, so it can be deployed anywhere:
 
 ## Environment Variables
 
-### Flutter (`flutter/.env`)
-```env
-SUPABASE_URL=your-supabase-url
-SUPABASE_ANON_KEY=your-anon-key
+See `.env.example` for all required variables.
+
+**Key configurations:**
+- Root `.env` - Supabase, Hermes endpoint, AI provider keys
+- `flutter/.env` - Supabase URL and anon key
+- `hermes-agent/.env` - API key, AI providers, Supabase credentials
+- Edge Function secrets - Set via `supabase secrets set`
+
+**Quick setup:**
+```bash
+# Copy example files
+cp .env.example .env
+cp flutter/.env.example flutter/.env
+cp hermes-agent/.env.example hermes-agent/.env
+
+# Edit with your credentials
+nano .env
 ```
 
-### Hermes Agent (`hermes-agent/.env`)
-```env
-API_SERVER_KEY=your-secure-api-key
-GOOGLE_API_KEY=your-google-api-key
-```
+For detailed authentication and deployment setup, see: **[`docs/AUTH_SETUP.md`](docs/AUTH_SETUP.md)**
 
 ## Next Steps
 
